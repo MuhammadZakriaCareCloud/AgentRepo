@@ -11,4 +11,5 @@ app_name = 'ai_integration'
 
 urlpatterns = [
     path('', include(router.urls)),
+    path('', include('ai_integration.training_urls')),
 ]

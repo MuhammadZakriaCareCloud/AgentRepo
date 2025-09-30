@@ -2,6 +2,15 @@ from django.db import models
 from django.contrib.auth.models import User
 import uuid
 
+# Import training models to make them available
+from .training_models import (
+    ConversationTrainingData,
+    AgentKnowledgeBase,
+    AgentTrainingSession,
+    ConversationPattern,
+    AgentPerformanceMetrics
+)
+
 class AIProvider(models.Model):
     """
     Configuration for different AI providers

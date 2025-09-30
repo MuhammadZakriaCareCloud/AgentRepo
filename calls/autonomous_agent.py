@@ -21,6 +21,9 @@ from calls.services.twilio_service import twilio_service
 from ai_integration.services.ai_service import ai_service
 from crm.models import Contact, ContactNote
 from scheduling.models import Campaign, CampaignContact
+from ai_integration.models import AIConversation, AIMessage
+from ai_integration.training_models import AgentKnowledgeBase
+from ai_integration.training_services import process_conversation_for_training_task
 
 
 logger = logging.getLogger(__name__)
@@ -874,3 +877,209 @@ def process_call_queue(self):
     except Exception as e:
         logger.error(f"❌ Call queue processing failed: {str(e)}")
         raise
+
+
+import logging
+from typing import Dict, List, Any, Optional
+from django.db.models import Q
+from ai_integration.models import AIConversation, AIMessage
+from ai_integration.training_models import AgentKnowledgeBase
+from ai_integration.training_services import process_conversation_for_training_task
+
+logger = logging.getLogger(__name__)
+
+class EnhancedAutonomousAgent:
+    """
+    Enhanced autonomous agent with learning capabilities
+    """
+    
+    def __init__(self, openai_client, agent_config: Dict[str, Any]):
+        self.openai_client = openai_client
+        self.agent_config = agent_config
+        self.logger = logging.getLogger(__name__)
+        
+        # Enhanced system prompt with learning capabilities
+        self.system_prompt = self._build_enhanced_system_prompt()
+    
+    def _build_enhanced_system_prompt(self) -> str:
+        """Build system prompt enhanced with learned knowledge"""
+        base_prompt = self.agent_config.get('system_prompt', DEFAULT_SYSTEM_PROMPT)
+        
+        # Get relevant knowledge from knowledge base
+        knowledge_entries = self._get_relevant_knowledge()
+        
+        if knowledge_entries:
+            knowledge_section = "\n\n=== LEARNED KNOWLEDGE ===\n"
+            for entry in knowledge_entries:
+                knowledge_section += f"\n**{entry.title}** ({entry.knowledge_type}):\n"
+                knowledge_section += f"{entry.content}\n"
+                if entry.context:
+                    knowledge_section += f"Context: {entry.context}\n"
+                knowledge_section += f"Success Rate: {entry.success_rate:.2%}\n"
+                knowledge_section += "---\n"
+            
+            enhanced_prompt = base_prompt + knowledge_section
+        else:
+            enhanced_prompt = base_prompt
+        
+        return enhanced_prompt
+    
+    def _get_relevant_knowledge(self, limit: int = 10) -> List[AgentKnowledgeBase]:
+        """Get relevant knowledge entries for this agent"""
+        try:
+            # Get high-performing knowledge entries
+            knowledge = AgentKnowledgeBase.objects.filter(
+                is_active=True,
+                success_rate__gte=0.6  # Only include successful patterns
+            ).order_by('-success_rate', '-usage_count')[:limit]
+            
+            return list(knowledge)
+            
+        except Exception as e:
+            self.logger.error(f"Error retrieving knowledge: {str(e)}")
+            return []
+    
+    def search_knowledge_by_intent(self, user_message: str) -> List[AgentKnowledgeBase]:
+        """Search knowledge base for relevant entries based on user message"""
+        try:
+            # Extract potential intents/keywords from user message
+            message_lower = user_message.lower()
+            
+            # Search in knowledge base
+            knowledge_matches = AgentKnowledgeBase.objects.filter(
+                Q(trigger_phrases__overlap=[word for word in message_lower.split()]) |
+                Q(content__icontains=message_lower[:50]) |  # First 50 chars
+                Q(title__icontains=message_lower[:30]),     # First 30 chars
+                is_active=True
+            ).order_by('-success_rate')[:5]
+            
+            return list(knowledge_matches)
+            
+        except Exception as e:
+            self.logger.error(f"Error searching knowledge: {str(e)}")
+            return []
+    
+    def generate_enhanced_response(self, user_message: str, conversation_context: List[Dict], contact_info: Dict) -> str:
+        """Generate response using learned knowledge"""
+        try:
+            # Get relevant knowledge for this specific message
+            relevant_knowledge = self.search_knowledge_by_intent(user_message)
+            
+            # Build context-aware system prompt
+            context_prompt = self.system_prompt
+            
+            if relevant_knowledge:
+                context_prompt += "\n\n=== RELEVANT LEARNED RESPONSES ===\n"
+                for knowledge in relevant_knowledge:
+                    context_prompt += f"\n**For similar situations**: {knowledge.content}\n"
+                    if knowledge.context:
+                        context_prompt += f"**When to use**: {knowledge.context}\n"
+                    context_prompt += f"**Success rate**: {knowledge.success_rate:.2%}\n---\n"
+            
+            # Build messages for OpenAI
+            messages = [
+                {"role": "system", "content": context_prompt}
+            ]
+            messages.extend(conversation_context)
+            messages.append({"role": "user", "content": user_message})
+            
+            # Generate response
+            response = self.openai_client.chat.completions.create(
+                model=self.agent_config.get('model', 'gpt-3.5-turbo'),
+                messages=messages,
+                temperature=self.agent_config.get('temperature', 0.7),
+                max_tokens=self.agent_config.get('max_tokens', 500)
+            )
+            
+            assistant_message = response.choices[0].message.content
+            
+            # Record knowledge usage if relevant knowledge was used
+            for knowledge in relevant_knowledge:
+                try:
+                    knowledge.usage_count += 1
+                    knowledge.save(update_fields=['usage_count'])
+                except Exception as e:
+                    self.logger.warning(f"Failed to update knowledge usage: {str(e)}")
+            
+            return assistant_message
+            
+        except Exception as e:
+            self.logger.error(f"Error generating enhanced response: {str(e)}")
+            # Fallback to basic response
+            return self._generate_basic_response(user_message, conversation_context, contact_info)
+    
+    def _generate_basic_response(self, user_message: str, conversation_context: List[Dict], contact_info: Dict) -> str:
+        """Fallback basic response generation"""
+        try:
+            messages = [
+                {"role": "system", "content": self.agent_config.get('system_prompt', DEFAULT_SYSTEM_PROMPT)}
+            ]
+            messages.extend(conversation_context)
+            messages.append({"role": "user", "content": user_message})
+            
+            response = self.openai_client.chat.completions.create(
+                model=self.agent_config.get('model', 'gpt-3.5-turbo'),
+                messages=messages,
+                temperature=self.agent_config.get('temperature', 0.7),
+                max_tokens=self.agent_config.get('max_tokens', 500)
+            )
+            
+            return response.choices[0].message.content
+            
+        except Exception as e:
+            self.logger.error(f"Error in basic response generation: {str(e)}")
+            return "I apologize, but I'm experiencing technical difficulties. Please try again later."
+    
+    def learn_from_conversation(self, ai_conversation: AIConversation, call=None, success_feedback: Optional[bool] = None):
+        """Trigger learning from a completed conversation"""
+        try:
+            # Process conversation for training in background
+            process_conversation_for_training_task.delay(
+                str(ai_conversation.id),
+                str(call.id) if call else None
+            )
+            
+            # If we have explicit success feedback, update conversation metadata
+            if success_feedback is not None:
+                conversation_metadata = ai_conversation.conversation_metadata or {}
+                conversation_metadata['user_success_feedback'] = success_feedback
+                ai_conversation.conversation_metadata = conversation_metadata
+                ai_conversation.save(update_fields=['conversation_metadata'])
+            
+            self.logger.info(f"Learning initiated for conversation {ai_conversation.id}")
+            
+        except Exception as e:
+            self.logger.error(f"Error initiating learning: {str(e)}")
+
+
+# Update the original make_autonomous_call function to use enhanced agent
+def make_autonomous_call_with_learning(phone_number: str, agent_config: Dict[str, Any], 
+                                     contact_data: Optional[Dict] = None) -> Dict[str, Any]:
+    """
+    Enhanced autonomous call with learning capabilities
+    """
+    try:
+        # ... (existing call setup code) ...
+        
+        # Use enhanced agent instead of basic agent
+        enhanced_agent = EnhancedAutonomousAgent(openai_client, agent_config)
+        
+        # ... (rest of the call logic using enhanced_agent) ...
+        
+        # After call completion, trigger learning
+        if ai_conversation:
+            enhanced_agent.learn_from_conversation(ai_conversation, call_record)
+        
+        return {
+            'success': True,
+            'call_id': str(call_record.id) if call_record else None,
+            'conversation_id': str(ai_conversation.id) if ai_conversation else None,
+            'message': 'Enhanced autonomous call completed with learning'
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in enhanced autonomous call: {str(e)}")
+        return {
+            'success': False,
+            'error': str(e)
+        }
