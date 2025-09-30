@@ -24,7 +24,8 @@ urlpatterns = [
     # Admin
     path('admin/', admin.site.urls),
     
-    # API Authentication
+    # Authentication endpoints
+    path('auth/', include('ai_call_system.auth_urls')),
     path('api/auth/token/', obtain_auth_token, name='api_token_auth'),
     
     # API Routes

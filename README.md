@@ -497,17 +497,63 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
+## 🧪 Testing the System
+
+### Core API Testing (No Redis Required)
+
+Test authentication, API endpoints, and CRUD operations:
+
+```bash
+python test_api_flow.py
+```
+
+**Features Tested:**
+- ✅ JWT Authentication & Authorization
+- ✅ Protected API Endpoints (CRM, Calls, Campaigns, AI)
+- ✅ CRUD Operations with Validation
+- ✅ Role-based Access Control
+
+### Full Autonomous Calling Test (Requires Redis)
+
+For complete autonomous calling functionality:
+
+1. **Install and start Redis server**
+2. **Start Celery worker:**
+   ```bash
+   celery -A ai_call_system worker --loglevel=info
+   ```
+3. **Run complete test:**
+   ```bash
+   python test_complete_flow.py
+   ```
+
+**Additional Features Tested:**
+- ✅ Autonomous AI Agent Calls
+- ✅ Background Task Processing  
+- ✅ Real-time Call Queue Management
+- ✅ Full Calling Workflow Automation
+
 ## 🎉 **Ready to Start?**
 
 Your autonomous AI calling system is ready to make calls that handle everything automatically!
 
 ```bash
-# Test the system
-python autonomous_demo_simple.py
+# Start the development server 
+python manage.py runserver --settings=ai_call_system.settings
 
-# Start making autonomous calls
-python manage.py runserver
+# Admin interface
 # Visit: http://127.0.0.1:8000/admin
+
+# API endpoints
+# Visit: http://127.0.0.1:8000/api/v1/
 ```
+
+### Key Endpoints:
+
+- **Authentication:** `/auth/jwt/login/`, `/auth/register/`
+- **CRM:** `/api/v1/crm/contacts/`, `/api/v1/crm/notes/` 
+- **Calls:** `/api/v1/calls/api/calls/`, `/api/v1/calls/api/call-queue/`
+- **Campaigns:** `/api/v1/scheduling/campaigns/`
+- **AI:** `/api/v1/ai/conversations/`, `/api/v1/ai/messages/`
 
 **🚀 The future of calling is autonomous - no humans required!**
