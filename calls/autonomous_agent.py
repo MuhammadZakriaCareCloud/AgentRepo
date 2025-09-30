@@ -15,6 +15,7 @@ from datetime import timedelta
 import logging
 import json
 
+from django.contrib.auth.models import User
 from calls.models import Call, CallQueue, CallTemplate
 from calls.services.twilio_service import twilio_service
 from ai_integration.services.ai_service import ai_service
@@ -26,22 +27,48 @@ logger = logging.getLogger(__name__)
 
 
 @shared_task(bind=True, max_retries=3)
-def autonomous_agent_call(self, contact_id, call_purpose, context_data=None):
+def autonomous_agent_call(self, contact_phone=None, contact_id=None, call_purpose='sales', context_data=None):
     """
-    Initiate a fully autonomous AI agent call
+    Initiate a fully autonomous AI agent call with dynamic agent selection
     
     Args:
-        contact_id: UUID of the contact to call
-        call_purpose: Purpose of the call (sales, support, follow_up, etc.)
+        contact_phone: Phone number to call (for quick calls)
+        contact_id: UUID of the contact to call (for CRM integration)
+        call_purpose: Purpose of the call (sales, support, follow_up, appointment)
         context_data: Additional context for the AI agent
     """
     try:
-        contact = Contact.objects.get(id=contact_id)
+        # Get contact by ID or phone
+        if contact_id:
+            contact = Contact.objects.get(id=contact_id)
+            phone_number = contact.phone_number
+        elif contact_phone:
+            phone_number = contact_phone
+            contact, created = Contact.objects.get_or_create(
+                phone_number=phone_number,
+                defaults={
+                    'first_name': 'Unknown',
+                    'last_name': 'Contact',
+                    'status': 'active'
+                }
+            )
+        else:
+            raise ValueError("Either contact_id or contact_phone must be provided")
         
         # Skip if contact is on do-not-call list
-        if contact.do_not_call:
-            logger.info(f"Skipping call to {contact.full_name} - on do-not-call list")
+        if hasattr(contact, 'do_not_call') and contact.do_not_call:
+            logger.info(f"Skipping call to {phone_number} - on do-not-call list")
             return {'status': 'skipped', 'reason': 'do_not_call'}
+        
+        # Select appropriate agent template based on purpose
+        agent_template = select_agent_for_purpose(call_purpose)
+        if not agent_template:
+            logger.error(f"No agent template found for purpose: {call_purpose}")
+            return {'status': 'failed', 'error': 'no_agent_template'}
+        
+        # Get agent name from template
+        agent_name = agent_template.conversation_flow.get('agent_name', 'AI Agent')
+        logger.info(f"🤖 {agent_name} initiating {call_purpose} call to {phone_number}")
         
         # Create autonomous call record
         call = Call.objects.create(
@@ -553,3 +580,297 @@ def trigger_support_call(contact_id, issue_type, context=None):
     context = context or {}
     context['issue_type'] = issue_type
     return autonomous_agent_call.delay(contact_id, 'customer_support', context)
+
+
+def select_agent_for_purpose(call_purpose):
+    """
+    Select the best agent template based on call purpose
+    
+    Args:
+        call_purpose: The purpose of the call
+        
+    Returns:
+        CallTemplate: The best matching agent template
+    """
+    # Map purposes to template types
+    purpose_to_template_type = {
+        'sales': 'sales',
+        'support': 'support', 
+        'appointment': 'appointment',
+        'follow_up': 'follow_up',
+        'survey': 'survey',
+        'reminder': 'appointment'
+    }
+    
+    # Get template type for this purpose
+    template_type = purpose_to_template_type.get(call_purpose, 'sales')
+    
+    # Try to find template by type
+    template = CallTemplate.objects.filter(
+        template_type=template_type,
+        is_active=True
+    ).first()
+    
+    if template:
+        return template
+    
+    # Ultimate fallback - any active template
+    return CallTemplate.objects.filter(is_active=True).first()
+
+
+@shared_task(bind=True)
+def dynamic_call_scheduler(self):
+    """
+    Dynamic call scheduler that automatically picks contacts and schedules calls
+    
+    This runs periodically and:
+    1. Finds contacts that need to be called
+    2. Determines the best time to call
+    3. Selects appropriate agent
+    4. Queues the call
+    """
+    try:
+        logger.info("🔄 Running dynamic call scheduler...")
+        
+        # Get active campaigns
+        active_campaigns = Campaign.objects.filter(status='active')
+        
+        scheduled_calls = 0
+        
+        for campaign in active_campaigns:
+            # Get contacts for this campaign
+            campaign_contacts = get_contacts_for_campaign(campaign)
+            
+            # Schedule calls based on campaign rules
+            for contact in campaign_contacts:
+                if should_call_contact(contact, campaign):
+                    # Get admin user
+                    admin_user = User.objects.filter(is_superuser=True).first()
+                    if not admin_user:
+                        admin_user = User.objects.create_superuser('admin', 'admin@example.com', 'admin123')
+                
+                    # Queue the call
+                    queue_entry = CallQueue.objects.create(
+                        contact=contact,
+                        call_template=select_agent_for_purpose(campaign.campaign_type),
+                        priority=get_call_priority(contact, campaign),
+                        scheduled_time=get_optimal_call_time(contact),
+                        max_attempts=3,
+                        status='pending',
+                        created_by=admin_user,
+                        call_config={
+                            'campaign_id': str(campaign.id),
+                            'contact_name': f"{contact.first_name} {contact.last_name}",
+                            'auto_scheduled': True,
+                            'scheduler_run': timezone.now().isoformat()
+                        }
+                    )
+                    
+                    scheduled_calls += 1
+                    logger.info(f"📅 Scheduled call: {contact.first_name} {contact.last_name}")
+        
+        logger.info(f"✅ Dynamic scheduler completed: {scheduled_calls} calls scheduled")
+        return {'scheduled_calls': scheduled_calls}
+        
+    except Exception as e:
+        logger.error(f"❌ Dynamic scheduler failed: {str(e)}")
+        raise
+
+
+def get_contacts_for_campaign(campaign):
+    """Get contacts that should be included in this campaign"""
+    
+    # Get all active contacts
+    contacts = Contact.objects.filter(status='active')
+    
+    # Filter based on campaign type
+    if campaign.campaign_type == 'sales':
+        # Sales: contacts without recent purchases (using lead source)
+        contacts = contacts.filter(
+            contact_type='lead'
+        )
+    elif campaign.campaign_type == 'follow_up':
+        # Follow-up: contacts with recent interactions
+        week_ago = timezone.now() - timedelta(days=7)
+        contacts = contacts.filter(
+            created_at__gte=week_ago
+        )
+    elif campaign.campaign_type == 'appointment_reminders':
+        # Appointments: contacts that are customers
+        contacts = contacts.filter(
+            contact_type='customer'
+        )
+    
+    # Exclude contacts already in this campaign
+    existing_campaign_contacts = CampaignContact.objects.filter(
+        campaign=campaign
+    ).values_list('contact_id', flat=True)
+    
+    contacts = contacts.exclude(id__in=existing_campaign_contacts)
+    
+    # Limit based on campaign settings
+    max_contacts = getattr(campaign, 'max_contacts_per_day', 50)
+    return contacts[:max_contacts]
+
+
+def should_call_contact(contact, campaign):
+    """Determine if we should call this contact now"""
+    
+    current_time = timezone.now()
+    
+    # Check calling hours
+    if campaign.allowed_calling_hours_start and campaign.allowed_calling_hours_end:
+        current_hour = current_time.hour
+        start_hour = campaign.allowed_calling_hours_start.hour
+        end_hour = campaign.allowed_calling_hours_end.hour
+        
+        if not (start_hour <= current_hour <= end_hour):
+            return False
+    
+    # Check days of week
+    if campaign.allowed_days_of_week:
+        current_weekday = current_time.weekday() + 1  # Django uses 1-7
+        if current_weekday not in campaign.allowed_days_of_week:
+            return False
+    
+    # Check if contact was called recently
+    recent_calls = Call.objects.filter(
+        contact=contact,
+        created_at__gte=timezone.now() - timedelta(days=1)
+    ).count()
+    
+    if recent_calls > 0:
+        return False  # Don't call same contact twice in a day
+    
+    # Check campaign rate limits
+    today_calls = Call.objects.filter(
+        created_at__date=timezone.now().date(),
+        call_metadata__campaign_id=str(campaign.id)
+    ).count()
+    
+    if today_calls >= campaign.max_calls_per_day:
+        return False
+    
+    return True
+
+
+def get_call_priority(contact, campaign):
+    """Calculate call priority based on contact and campaign data"""
+    
+    priority = 'normal'  # Default priority
+    
+    # Higher priority for VIP contacts
+    if hasattr(contact, 'is_vip') and contact.is_vip:
+        priority = 'high'
+    
+    # Higher priority for urgent campaigns
+    if campaign.campaign_type == 'appointment_reminders':
+        priority = 'urgent'
+    
+    # Lower priority for general sales
+    if campaign.campaign_type == 'bulk_calls':
+        priority = 'low'
+    
+    return priority
+
+
+def get_optimal_call_time(contact):
+    """Determine the best time to call this contact"""
+    
+    current_time = timezone.now()
+    
+    # Check contact preferences
+    if hasattr(contact, 'ai_interaction_history') and contact.ai_interaction_history:
+        preferred_time = contact.ai_interaction_history.get('preferred_time')
+        
+        if preferred_time == 'morning':
+            # Schedule for 9-11 AM
+            call_time = current_time.replace(hour=9, minute=0, second=0)
+        elif preferred_time == 'afternoon':
+            # Schedule for 2-4 PM
+            call_time = current_time.replace(hour=14, minute=0, second=0)
+        elif preferred_time == 'evening':
+            # Schedule for 6-7 PM
+            call_time = current_time.replace(hour=18, minute=0, second=0)
+        else:
+            # Default to 10 AM
+            call_time = current_time.replace(hour=10, minute=0, second=0)
+    else:
+        # Default to 10 AM
+        call_time = current_time.replace(hour=10, minute=0, second=0)
+    
+    # If time has passed today, schedule for tomorrow
+    if call_time <= current_time:
+        call_time += timedelta(days=1)
+    
+    return call_time
+
+
+@shared_task(bind=True)
+def process_call_queue(self):
+    """
+    Process pending calls in the queue
+    
+    This task:
+    1. Finds calls that are ready to be made
+    2. Initiates the autonomous agent call
+    3. Updates queue status
+    """
+    try:
+        logger.info("📞 Processing call queue...")
+        
+        # Get pending calls that are ready
+        current_time = timezone.now()
+        from django.db import models
+        
+        ready_calls = CallQueue.objects.filter(
+            status='pending',
+            scheduled_time__lte=current_time,
+            attempt_count__lt=models.F('max_attempts')
+        ).order_by('priority', 'scheduled_time')
+        
+        processed_calls = 0
+        
+        for queue_entry in ready_calls[:10]:  # Process max 10 calls at once
+            try:
+                # Get agent name from template
+                agent_name = 'AI Agent'
+                if queue_entry.call_template and queue_entry.call_template.conversation_flow:
+                    agent_name = queue_entry.call_template.conversation_flow.get('agent_name', 'AI Agent')
+                
+                logger.info(f"🤖 {agent_name} making call to {queue_entry.contact.phone_number}")
+                
+                # Update queue entry
+                queue_entry.status = 'in_progress'
+                queue_entry.attempt_count += 1
+                queue_entry.save()
+                
+                # Make the call
+                result = autonomous_agent_call.delay(
+                    contact_id=str(queue_entry.contact.id),
+                    call_purpose=queue_entry.call_template.template_type if queue_entry.call_template else 'sales',
+                    context_data={
+                        'queue_id': str(queue_entry.id),
+                        'agent_name': agent_name,
+                        'template_id': str(queue_entry.call_template.id) if queue_entry.call_template else None
+                    }
+                )
+                
+                # Update with task ID
+                queue_entry.call_config['task_id'] = result.id
+                queue_entry.save()
+                
+                processed_calls += 1
+                
+            except Exception as e:
+                logger.error(f"❌ Failed to process queue entry {queue_entry.id}: {str(e)}")
+                queue_entry.status = 'failed'
+                queue_entry.call_config['error'] = str(e)
+                queue_entry.save()
+        
+        logger.info(f"✅ Call queue processed: {processed_calls} calls initiated")
+        return {'processed_calls': processed_calls}
+        
+    except Exception as e:
+        logger.error(f"❌ Call queue processing failed: {str(e)}")
+        raise

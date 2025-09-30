@@ -20,4 +20,7 @@ urlpatterns = [
     
     # Regular endpoints
     path('', include(router.urls)),
+    
+    # CSV Upload endpoints
+    path('csv/', include('calls.csv_urls')),
 ]

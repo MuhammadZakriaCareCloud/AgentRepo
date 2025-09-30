@@ -1,0 +1,11 @@
+first_name,last_name,phone_number,email,company,job_title,lead_source,preferred_time,language,timezone,custom_field_1,custom_field_2,notes
+Ahmed,Hassan,923001234567,ahmed.hassan@example.com,Tech Solutions,Manager,website,morning,urdu,Asia/Karachi,VIP,High Priority,Interested in premium package
+Ayesha,Khan,923001234568,ayesha.khan@example.com,Digital Corp,Director,referral,afternoon,urdu,Asia/Karachi,Regular,Medium Priority,Follow up needed
+Muhammad,Ali,923001234569,muhammad.ali@example.com,Business Hub,CEO,social_media,evening,urdu,Asia/Karachi,VIP,High Priority,Ready to purchase
+Fatima,Sheikh,923001234570,fatima.sheikh@example.com,StartupXYZ,Founder,google_ads,morning,english,Asia/Karachi,Regular,Low Priority,Initial contact
+Hassan,Ahmad,923001234571,hassan.ahmad@example.com,Enterprise Ltd,CTO,cold_call,afternoon,urdu,Asia/Karachi,VIP,High Priority,Technical discussion needed
+Sara,Ahmed,923001234572,sara.ahmed@example.com,Innovation Inc,VP Sales,partner,morning,english,Asia/Karachi,Regular,Medium Priority,Demo scheduled
+Omar,Khan,923001234573,omar.khan@example.com,Global Tech,Engineer,website,evening,urdu,Asia/Karachi,Regular,Low Priority,Price inquiry
+Zainab,Ali,923001234574,zainab.ali@example.com,Future Corp,Manager,referral,afternoon,urdu,Asia/Karachi,VIP,High Priority,Contract negotiation
+Bilal,Sheikh,923001234575,bilal.sheikh@example.com,NextGen,Developer,social_media,morning,english,Asia/Karachi,Regular,Medium Priority,Technical questions
+Mariam,Hassan,923001234576,mariam.hassan@example.com,ProTech,Analyst,google_ads,evening,urdu,Asia/Karachi,Regular,Low Priority,Market research
